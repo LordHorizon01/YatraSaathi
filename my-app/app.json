@@ -17,7 +17,8 @@
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Saarthi AI needs your location to detect nearby fatigued drivers.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Saarthi AI tracks location in the background to keep the DangerBubble geo-index updated.",
-        "UIBackgroundModes": ["location", "fetch"]
+        "NSMicrophoneUsageDescription": "Saarthi AI records a 10-second voice sample to check your alertness during drives.",
+        "UIBackgroundModes": ["location", "fetch", "audio"]
       }
     },
     "android": {
@@ -31,6 +32,9 @@
         "ACCESS_FINE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "RECORD_AUDIO",
         "RECEIVE_BOOT_COMPLETED"
       ]
     },
@@ -42,6 +46,13 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "Saarthi AI tracks your location to protect nearby drivers via DangerBubble."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Saarthi AI records a 10-second voice sample during check-ins to detect fatigue.",
+          "enableBackgroundRecording": true
         }
       ],
       [

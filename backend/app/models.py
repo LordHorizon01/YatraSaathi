@@ -21,7 +21,6 @@ class VehicleProfile(Base):
     registered_at = Column(DateTime,    nullable=False, default=datetime.utcnow)
     is_active     = Column(Boolean,     nullable=False, default=True)
 
-    sessions = relationship("DriveSession", back_populates="vehicle", lazy="noload")
     streaks  = relationship("SafetyStreak", back_populates="vehicle", lazy="noload")
 
 
@@ -29,7 +28,7 @@ class DriveSession(Base):
     __tablename__ = "drive_sessions"
 
     id                 = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    vehicle_id         = Column(String(12), ForeignKey("vehicle_profiles.vehicle_id"), nullable=False, index=True)
+    vehicle_id         = Column(String(50), nullable=False, index=True)
     started_at         = Column(DateTime, nullable=False, default=datetime.utcnow)
     ended_at           = Column(DateTime, nullable=True)
     final_state        = Column(String(20), nullable=True)    # completed | rest_mandatory | emergency_triggered | app_killed
@@ -42,7 +41,6 @@ class DriveSession(Base):
     streak_day         = Column(Integer, nullable=False, default=0)
     safety_points      = Column(Integer, nullable=False, default=0)
 
-    vehicle = relationship("VehicleProfile", back_populates="sessions")
     logs    = relationship("FatigueLog", back_populates="session", lazy="noload")
 
 

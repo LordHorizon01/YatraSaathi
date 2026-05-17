@@ -1,6 +1,6 @@
 """
 OpenAI Whisper + GPT-4o wrapper for voice analysis.
-Returns (transcript, coherence_score 0-1, slur_detected bool).
+Returns (transcript, coherence_score 0-1, slur_detected bool, first_word_latency_sec).
 Falls back to mock values when OPENAI_API_KEY is not set.
 """
 import re
@@ -18,11 +18,14 @@ def _get_client() -> Optional[AsyncOpenAI]:
     return _client
 
 
-async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.m4a") -> str:
-    """Transcribe audio via Whisper. Returns empty string on failure."""
+async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.m4a") -> tuple[str, float]:
+    """
+    Transcribe audio via Whisper.
+    Returns (transcript_text, first_word_start_time_in_seconds).
+    """
     client = _get_client()
     if not client:
-        return "[mock-transcript] Haan bhai, theek hai."   # dev fallback
+        return ("[mock-transcript] Haan bhai, theek hai.", 0.5)   # dev fallback
 
     from io import BytesIO
     file_tuple = (filename, BytesIO(audio_bytes), "audio/m4a")
@@ -30,8 +33,23 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.m4a") -> s
         model="whisper-1",
         file=file_tuple,        # type: ignore
         language=None,          # auto-detect language
+        response_format="verbose_json",
+        timestamp_granularities=["word"]
     )
-    return response.text.strip()
+    
+    # Extract transcript and first word latency
+    text = response.text.strip()
+    first_word_latency = 0.0
+    
+    if hasattr(response, "words") and response.words:
+        word = response.words[0]
+        # OpenAI returns Pydantic objects with .start attribute
+        if hasattr(word, "start"):
+            first_word_latency = float(word.start)
+        elif isinstance(word, dict):
+            first_word_latency = float(word.get("start", 0))
+        
+    return text, first_word_latency
 
 
 async def score_coherence(question: str, answer: str) -> float:

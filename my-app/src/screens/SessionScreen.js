@@ -8,24 +8,25 @@ import * as Haptics from 'expo-haptics';
 
 import { COLORS, RADIUS, SPACING, STATE_THEME } from '../theme';
 import { useSession, Actions } from '../context/SessionContext';
-import { formatDuration, formatCountdown } from '../utils/fatigueUtils';
+import { formatDuration } from '../utils/fatigueUtils';
 import FatigueRing from '../components/FatigueRing';
 import DangerOverlay from '../components/DangerOverlay';
-import { endSession, pushLocation, getNearbyDangers } from '../services/api';
+import { endSession, pushLocation, connectDangerWS, updateWSPosition } from '../services/api';
 
 const GEO_INTERVAL_MS = 5_000;  // broadcast location every 5s per spec
 
 export default function SessionScreen({ navigation }) {
   const { session, dispatch, stopDriveTimer } = useSession();
-  const [nearbyDanger, setNearbyDanger]       = useState(null); // { distanceM }
+  const [nearbyDanger, setNearbyDanger]       = useState(null);
   const [showDanger,   setShowDanger]         = useState(false);
   const [endConfirm,   setEndConfirm]         = useState(false);
 
   const geoRef      = useRef(null);
   const locationRef = useRef(null);
+  const wsRef       = useRef(null);
   const flashAnim   = useRef(new Animated.Value(0)).current;
 
-  // ─── Location & Geo Loop ────────────────────────────────────────────────────
+  // ─── Location Broadcast + WebSocket Danger Alerts ──────────────────────────
   useEffect(() => {
     let active = true;
 
@@ -33,13 +34,55 @@ export default function SessionScreen({ navigation }) {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') return;
 
+      // Get initial position for WebSocket registration
+      const initial = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      locationRef.current = initial.coords;
+
+      // Connect to DangerBubble WebSocket for real-time push alerts
+      try {
+        const ws = connectDangerWS(
+          session.vehicleId,
+          initial.coords.latitude,
+          initial.coords.longitude,
+        );
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'danger') {
+              setNearbyDanger({ distanceM: data.distance_m, score: data.fatigue_score });
+              setShowDanger(true);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            }
+          } catch (_) {}
+        };
+
+        ws.onclose = () => {
+          // Reconnect after 3s if session is still active
+          if (active) {
+            setTimeout(() => {
+              if (active && locationRef.current) {
+                const reconnWs = connectDangerWS(
+                  session.vehicleId,
+                  locationRef.current.latitude,
+                  locationRef.current.longitude,
+                );
+                wsRef.current = reconnWs;
+              }
+            }, 3000);
+          }
+        };
+      } catch (_) {}
+
+      // Periodic location broadcast to Redis geo-index
       geoRef.current = setInterval(async () => {
         if (!active) return;
         try {
           const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
           locationRef.current = loc.coords;
 
-          // Broadcast own position
+          // Broadcast position to Redis
           await pushLocation(
             session.vehicleId,
             loc.coords.latitude,
@@ -47,12 +90,9 @@ export default function SessionScreen({ navigation }) {
             session.fatigueScore,
           ).catch(() => {});
 
-          // Poll for nearby dangers
-          const dangers = await getNearbyDangers(loc.coords.latitude, loc.coords.longitude, 1).catch(() => []);
-          if (dangers?.length > 0) {
-            setNearbyDanger({ distanceM: Math.round(dangers[0].distance_m) });
-            setShowDanger(true);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+          // Update WebSocket position so server filters correctly
+          if (wsRef.current) {
+            updateWSPosition(wsRef.current, loc.coords.latitude, loc.coords.longitude);
           }
         } catch (_) {}
       }, GEO_INTERVAL_MS);
@@ -61,6 +101,10 @@ export default function SessionScreen({ navigation }) {
     return () => {
       active = false;
       if (geoRef.current) clearInterval(geoRef.current);
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch (_) {}
+        wsRef.current = null;
+      }
     };
   }, [session.vehicleId]);
 
@@ -85,11 +129,23 @@ export default function SessionScreen({ navigation }) {
     }
   }, [session.fatigueState]);
 
+  // ─── Next check-in countdown (derived from epoch) ──────────────────────────
+  const nextCheckinCountdown = session.nextCheckinAt
+    ? Math.max(0, Math.ceil((session.nextCheckinAt - Date.now()) / 1000))
+    : 0;
+
+  const formatCountdownDisplay = (totalSec) => {
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
+
   // ─── End Drive ──────────────────────────────────────────────────────────────
   const handleEndDrive = useCallback(async () => {
     if (!endConfirm) { setEndConfirm(true); return; }
-    stopDriveTimer();
+    await stopDriveTimer();
     if (geoRef.current) clearInterval(geoRef.current);
+    if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
     await endSession(session.sessionId).catch(() => {});
     dispatch({ type: Actions.END_SESSION });
     navigation.replace('Dashboard');
@@ -126,7 +182,7 @@ export default function SessionScreen({ navigation }) {
         {!session.hardLocked && (
           <View style={styles.countdownCard}>
             <Text style={styles.countdownLabel}>Next Check-in</Text>
-            <Text style={styles.countdownTimer}>{formatCountdown(session.nextCheckinMs)}</Text>
+            <Text style={styles.countdownTimer}>{formatCountdownDisplay(nextCheckinCountdown)}</Text>
           </View>
         )}
 
@@ -170,6 +226,30 @@ export default function SessionScreen({ navigation }) {
         {endConfirm && (
           <Pressable onPress={() => setEndConfirm(false)}>
             <Text style={styles.cancelText}>Cancel</Text>
+          </Pressable>
+        )}
+
+        {/* DEV ONLY: Instant check-in for testing */}
+        {__DEV__ && (
+          <Pressable
+            style={styles.debugBtn}
+            onPress={() => navigation.navigate('Checkin')}
+          >
+            <Text style={styles.debugBtnText}>🧪 Test Check-in Now</Text>
+          </Pressable>
+        )}
+
+        {/* DEV ONLY: Simulate a nearby fatigued driver */}
+        {__DEV__ && (
+          <Pressable
+            style={[styles.debugBtn, { borderColor: '#FF4444', marginTop: 8 }]}
+            onPress={() => {
+              setNearbyDanger({ vehicleId: 'TEST-DRIVER', distanceM: 350, fatigueScore: 9 });
+              setShowDanger(true);
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            }}
+          >
+            <Text style={[styles.debugBtnText, { color: '#FF4444' }]}>🚨 Test DangerBubble</Text>
           </Pressable>
         )}
 
@@ -238,4 +318,11 @@ const styles = StyleSheet.create({
   },
   endBtnText:  { fontSize: 15, fontWeight: '700', color: COLORS.textPrimary },
   cancelText:  { fontSize: 13, color: COLORS.textMuted, marginTop: SPACING.sm },
+
+  debugBtn: {
+    backgroundColor: '#1a1a2e', borderRadius: RADIUS.full,
+    paddingVertical: 10, paddingHorizontal: 24,
+    borderWidth: 1, borderColor: '#FFD700', marginTop: SPACING.md,
+  },
+  debugBtnText: { fontSize: 13, fontWeight: '600', color: '#FFD700' },
 });

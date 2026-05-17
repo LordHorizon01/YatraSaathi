@@ -5,6 +5,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Speech from 'expo-speech';
 import * as Haptics from 'expo-haptics';
+import * as Location from 'expo-location';
 
 import { COLORS, RADIUS, SPACING, STATE_THEME } from '../theme';
 import { useSession, Actions } from '../context/SessionContext';
@@ -75,6 +76,25 @@ export default function CheckinScreen({ navigation }) {
 
     try {
       const { uri, latencyMs } = await stopRecording(recordStart.current);
+
+      // If recording failed, show error
+      if (!uri) {
+        setError('Recording failed — mic may not be available on this device. Try a physical phone.');
+        const fallback = { fatigue_score: 3, latency_flag: 'ok', coherence_flag: 'ok', slur_flag: 'ok', danger_bubble_active: false };
+        setResult(fallback);
+        dispatch({ type: Actions.CHECKIN_RESULT, payload: fallback });
+        setPhase(PHASE.RESULT);
+        return;
+      }
+
+      // Grab current position for DangerBubble geo-broadcast
+      let lat = 0, lng = 0;
+      try {
+        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        lat = loc.coords.latitude;
+        lng = loc.coords.longitude;
+      } catch (_) {}
+
       const data = await analyzeVoice({
         audioUri:    uri,
         sessionId:   session.sessionId,
@@ -82,6 +102,8 @@ export default function CheckinScreen({ navigation }) {
         latencyMs,
         questionText: question,
         lang:        session.languagePref,
+        lat,
+        lng,
       });
       setResult(data);
       dispatch({ type: Actions.CHECKIN_RESULT, payload: data });
@@ -92,7 +114,10 @@ export default function CheckinScreen({ navigation }) {
           : Haptics.NotificationFeedbackType.Warning,
       );
     } catch (e) {
-      // Offline / API error: treat as no-response (latency-critical flag)
+      console.error('[Saarthi] Check-in failed:', e.message, e.response?.data);
+      // Show the actual error so we can debug
+      const errMsg = e.response?.data?.detail || e.message || 'Unknown error';
+      setError(`API Error: ${errMsg}`);
       const fallback = { fatigue_score: 6, latency_flag: 'critical', coherence_flag: 'ok', slur_flag: 'ok', danger_bubble_active: false };
       setResult(fallback);
       dispatch({ type: Actions.CHECKIN_RESULT, payload: fallback });

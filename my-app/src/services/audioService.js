@@ -5,58 +5,71 @@ import { Audio } from 'expo-av';
 // and surfaces clean errors instead of raw expo exceptions.
 
 let _recordingInstance = null;
+let _recordingStartTime = null;
 
-/** Request mic permissions. Call once on app start. */
-export async function requestAudioPermissions() {
+/**
+ * Start recording. Returns a timestamp (epoch ms) for latency measurement.
+ */
+export async function startRecording() {
+  // Clean up any stale instance
+  if (_recordingInstance) {
+    try { await _recordingInstance.stopAndUnloadAsync(); } catch (_) {}
+    _recordingInstance = null;
+  }
+
+  // Request mic permission (no-ops if already granted)
   const { status } = await Audio.requestPermissionsAsync();
   if (status !== 'granted') {
-    throw new Error('Microphone permission denied. Voice check-ins will not work.');
+    throw new Error('Microphone permission denied. Please enable it in Settings.');
   }
+
   await Audio.setAudioModeAsync({
     allowsRecordingIOS:         true,
     playsInSilentModeIOS:       true,
     shouldDuckAndroid:          true,
     playThroughEarpieceAndroid: false,
   });
-}
-
-/**
- * Start recording. Returns a timestamp (epoch ms) for latency measurement.
- * Caller should store this and compute delta when stopRecording() is called.
- */
-export async function startRecording() {
-  if (_recordingInstance) {
-    await _recordingInstance.stopAndUnloadAsync().catch(() => {});
-    _recordingInstance = null;
-  }
 
   const { recording } = await Audio.Recording.createAsync(
     Audio.RecordingOptionsPresets.HIGH_QUALITY,
   );
   _recordingInstance = recording;
-  return Date.now(); // question-end timestamp
+  _recordingStartTime = Date.now();
+  console.log('[Saarthi] Recording started');
+  return _recordingStartTime;
 }
 
 /**
- * Stop recording.
- * @returns {{ uri: string, durationMs: number }}
+ * Stop recording. Returns { uri, latencyMs }.
+ * If no active recording, returns a safe fallback instead of throwing.
  */
 export async function stopRecording(questionEndTimestamp) {
-  if (!_recordingInstance) throw new Error('No active recording to stop.');
+  if (!_recordingInstance) {
+    console.warn('[Saarthi] No active recording — returning fallback');
+    return { uri: null, latencyMs: Date.now() - (questionEndTimestamp || Date.now()) };
+  }
 
-  const answerStartTimestamp = Date.now();
-  await _recordingInstance.stopAndUnloadAsync();
+  const latencyMs = Date.now() - (questionEndTimestamp || _recordingStartTime || Date.now());
+
+  try {
+    await _recordingInstance.stopAndUnloadAsync();
+  } catch (e) {
+    console.warn('[Saarthi] stopAndUnloadAsync failed:', e.message);
+  }
+
   const uri = _recordingInstance.getURI();
+  console.log('[Saarthi] Recording stopped, URI:', uri);
   _recordingInstance = null;
+  _recordingStartTime = null;
 
-  const latencyMs = answerStartTimestamp - questionEndTimestamp;
   return { uri, latencyMs };
 }
 
 /** Cancel and discard any in-progress recording. */
 export async function cancelRecording() {
   if (_recordingInstance) {
-    await _recordingInstance.stopAndUnloadAsync().catch(() => {});
+    try { await _recordingInstance.stopAndUnloadAsync(); } catch (_) {}
     _recordingInstance = null;
+    _recordingStartTime = null;
   }
 }

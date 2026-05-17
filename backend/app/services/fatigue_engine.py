@@ -6,8 +6,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-LATENCY_WARNING_MS  = 2_500
-LATENCY_CRITICAL_MS = 4_000
+# Thresholds are based on Whisper's first_word_start_time (seconds from recording start).
+# Healthy alert driver: responds in 0.5–2s after TTS ends.
+# Warning zone: 3–5s (mild drowsiness)
+# Critical: 5s+ or no speech detected (severe drowsiness / asleep)
+LATENCY_WARNING_MS  = 3_000   # 3 seconds to first word
+LATENCY_CRITICAL_MS = 5_000   # 5 seconds to first word
 
 COHERENCE_WARNING  = 0.60
 COHERENCE_CRITICAL = 0.30
@@ -40,7 +44,10 @@ def compute_fatigue_score(
     score = 1
 
     # ── Latency component (max +4) ──────────────────────────────────────────
-    if latency_ms is None or latency_ms > LATENCY_CRITICAL_MS:
+    if latency_ms is None:
+        # Complete silence — driver is asleep or incapacitated. Instant 10.
+        return 10, "critical", "critical", "critical"
+    elif latency_ms > LATENCY_CRITICAL_MS:
         latency_flag = "critical"
         score += WEIGHT_LATENCY
     elif latency_ms > LATENCY_WARNING_MS:

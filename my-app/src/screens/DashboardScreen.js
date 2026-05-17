@@ -33,23 +33,27 @@ export default function DashboardScreen({ navigation }) {
   const handleStartDrive = async () => {
     setLoading(true);
     try {
+      // Ensure we always have a vehicleId — generate one if not registered yet
+      const effectiveVehicleId = session.vehicleId && session.vehicleId !== 'null'
+        ? session.vehicleId
+        : `DRV-${Date.now().toString(36).toUpperCase()}`;
+
       // Attempt backend session creation; fall back gracefully if offline
       let sessionId = `local-${Date.now()}`;
       try {
-        const res = await startSession(session.vehicleId, session.languagePref);
+        const res = await startSession(effectiveVehicleId, session.languagePref);
         sessionId = res.session_id;
       } catch (err) {
         console.warn('Backend session start failed, using local session ID:', err.message);
       }
       
-      dispatch({ type: Actions.START_SESSION, payload: { sessionId, vehicleId: session.vehicleId } });
-      const nextCheckinAt = Date.now() + 45 * 60 * 1000; // first interval (0–4h = 45min)
+      dispatch({ type: Actions.START_SESSION, payload: { sessionId, vehicleId: effectiveVehicleId } });
+      const nextCheckinAt = Date.now() + 45 * 60 * 1000;
       
       try {
-        await startDriveTimer({ sessionId, vehicleId: session.vehicleId, nextCheckinAt });
+        await startDriveTimer({ sessionId, vehicleId: effectiveVehicleId, nextCheckinAt, lang: session.languagePref });
       } catch (err) {
         console.warn('Failed to start drive timer/background tasks:', err.message);
-        // Continue anyway so the user isn't stuck if background permissions are rejected
       }
       
       navigation.navigate('Session');

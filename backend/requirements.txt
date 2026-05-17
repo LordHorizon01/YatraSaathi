@@ -8,3 +8,4 @@ redis[asyncio]>=5.0.4
 openai>=1.30.0
 python-multipart>=0.0.9    # Required for UploadFile support
 httpx>=0.27.0              # Async HTTP for internal calls
+websockets>=12.0           # Required by FastAPI WebSocket support

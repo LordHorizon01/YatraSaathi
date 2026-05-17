@@ -29,26 +29,24 @@ export const KEYS = {
 };
 
 // ─── Background Location Task ─────────────────────────────────────────────────
-// The OS calls this even when the screen is off. We use it to:
-//   a) Keep the geo-index updated in Redis.
-//   b) Check if a scheduled check-in is now overdue.
-TaskManager.defineTask(TASK_BG_LOCATION, async ({ data, error }) => {
-  if (error || !data?.locations?.length) return;
+// Wrapped in try-catch: TaskManager.defineTask crashes in Expo Go.
+try {
+  TaskManager.defineTask(TASK_BG_LOCATION, async ({ data, error }) => {
+    if (error || !data?.locations?.length) return;
 
-  const loc = data.locations[0];
-  const [vehicleId, scoreStr, nextCheckinAt] = await Promise.all([
-    AsyncStorage.getItem(KEYS.VEHICLE_ID),
-    AsyncStorage.getItem(KEYS.FATIGUE_SCORE),
-    AsyncStorage.getItem(KEYS.NEXT_CHECKIN_AT),
-  ]);
+    const loc = data.locations[0];
+    const [vehicleId, scoreStr] = await Promise.all([
+      AsyncStorage.getItem(KEYS.VEHICLE_ID),
+      AsyncStorage.getItem(KEYS.FATIGUE_SCORE),
+    ]);
 
-  if (!vehicleId) return;
-
-  const score = parseInt(scoreStr ?? '1', 10);
-
-  // Push location to Redis (best-effort; silently fails offline)
-  await pushLocation(vehicleId, loc.coords.latitude, loc.coords.longitude, score).catch(() => {});
-});
+    if (!vehicleId) return;
+    const score = parseInt(scoreStr ?? '1', 10);
+    await pushLocation(vehicleId, loc.coords.latitude, loc.coords.longitude, score).catch(() => {});
+  });
+} catch (_) {
+  console.warn('[Saarthi] TaskManager not available (Expo Go). Background GPS disabled.');
+}
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 

@@ -23,6 +23,7 @@ import {
   scheduleCheckinNotification, cancelCheckinNotification,
   persistSessionMeta, clearSessionMeta, KEYS,
 } from '../services/backgroundTasks';
+import { initDriveService, teardownDriveService } from '../services/BackgroundService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // ─── State Shape ──────────────────────────────────────────────────────────────
@@ -141,24 +142,29 @@ export function SessionProvider({ children }) {
   const appState   = useRef(AppState.currentState);
 
   // ── Foreground tick (UI only) ──────────────────────────────────────────────
-  const startDriveTimer = useCallback(async ({ sessionId, vehicleId, nextCheckinAt }) => {
-    // Persist to AsyncStorage so background tasks can read it
-    await persistSessionMeta({ sessionId, vehicleId, score: 1, nextCheckinAt: new Date(nextCheckinAt) });
-
-    // Schedule first check-in notification
-    await scheduleCheckinNotification(nextCheckinAt - Date.now());
-
-    // Start foreground GPS + background task
-    await startBackgroundLocation();
-
-    // 1-second UI ticker — only updates driveSeconds display
+  const startDriveTimer = useCallback(async ({ sessionId, vehicleId, nextCheckinAt, lang }) => {
+    // 1-second UI ticker — START THIS FIRST so the timer is always visible
     tickRef.current = setInterval(() => dispatch({ type: Actions.TICK }), 1000);
+
+    // Everything below is best-effort; failures must NOT block the timer
+    try { await persistSessionMeta({ sessionId, vehicleId, score: 1, nextCheckinAt: new Date(nextCheckinAt) }); }
+    catch (e) { console.warn('[Saarthi] persistSessionMeta failed:', e.message); }
+
+    try { await scheduleCheckinNotification(nextCheckinAt - Date.now()); }
+    catch (e) { console.warn('[Saarthi] scheduleCheckinNotification failed:', e.message); }
+
+    try { await startBackgroundLocation(); }
+    catch (e) { console.warn('[Saarthi] startBackgroundLocation failed:', e.message); }
+
+    try { await initDriveService({ sessionId, vehicleId, lang: lang ?? 'hi' }); }
+    catch (e) { console.warn('[Saarthi] initDriveService failed:', e.message); }
   }, []);
 
   const stopDriveTimer = useCallback(async () => {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     await stopBackgroundLocation();
     await cancelCheckinNotification();
+    await teardownDriveService();
     await clearSessionMeta();
   }, []);
 
