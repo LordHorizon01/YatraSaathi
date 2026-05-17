@@ -29,73 +29,76 @@ export default function SessionScreen({ navigation }) {
   // ─── Location Broadcast + WebSocket Danger Alerts ──────────────────────────
   useEffect(() => {
     let active = true;
+    const vid = session.vehicleId || `PHONE-${Date.now()}`;
 
-    (async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
+    // Connect to DangerBubble WebSocket IMMEDIATELY (don't wait for GPS).
+    // Register with (0,0) now; update coords when GPS is available.
+    console.log('[Saarthi] Connecting WS for', vid);
+    try {
+      const ws = connectDangerWS(vid, 0, 0);
+      wsRef.current = ws;
 
-      // Get initial position for WebSocket registration
-      const initial = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      locationRef.current = initial.coords;
+      ws.onopen  = () => console.log('[Saarthi] WS connected ✅');
+      ws.onerror = (e) => console.warn('[Saarthi] WS error:', e.message);
 
-      // Connect to DangerBubble WebSocket for real-time push alerts
-      try {
-        const ws = connectDangerWS(
-          session.vehicleId,
-          initial.coords.latitude,
-          initial.coords.longitude,
-        );
-        wsRef.current = ws;
-
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === 'danger') {
-              setNearbyDanger({ distanceM: data.distance_m, score: data.fatigue_score });
-              setShowDanger(true);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            }
-          } catch (_) {}
-        };
-
-        ws.onclose = () => {
-          // Reconnect after 3s if session is still active
-          if (active) {
-            setTimeout(() => {
-              if (active && locationRef.current) {
-                const reconnWs = connectDangerWS(
-                  session.vehicleId,
-                  locationRef.current.latitude,
-                  locationRef.current.longitude,
-                );
-                wsRef.current = reconnWs;
-              }
-            }, 3000);
-          }
-        };
-      } catch (_) {}
-
-      // Periodic location broadcast to Redis geo-index
-      geoRef.current = setInterval(async () => {
-        if (!active) return;
+      ws.onmessage = (event) => {
         try {
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          locationRef.current = loc.coords;
-
-          // Broadcast position to Redis
-          await pushLocation(
-            session.vehicleId,
-            loc.coords.latitude,
-            loc.coords.longitude,
-            session.fatigueScore,
-          ).catch(() => {});
-
-          // Update WebSocket position so server filters correctly
-          if (wsRef.current) {
-            updateWSPosition(wsRef.current, loc.coords.latitude, loc.coords.longitude);
+          const data = JSON.parse(event.data);
+          console.log('[Saarthi] WS message received:', data);
+          if (data.type === 'danger') {
+            setNearbyDanger({ distanceM: data.distance_m, score: data.fatigue_score });
+            setShowDanger(true);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
           }
         } catch (_) {}
-      }, GEO_INTERVAL_MS);
+      };
+
+      ws.onclose = () => {
+        console.warn('[Saarthi] WS closed, reconnecting in 3s...');
+        if (active) {
+          setTimeout(() => {
+            if (active) {
+              const lat = locationRef.current?.latitude  ?? 0;
+              const lng = locationRef.current?.longitude ?? 0;
+              const reconnWs = connectDangerWS(vid, lat, lng);
+              wsRef.current = reconnWs;
+            }
+          }, 3000);
+        }
+      };
+    } catch (e) {
+      console.warn('[Saarthi] WS init failed:', e.message);
+    }
+
+    // GPS location broadcast (best-effort — WS works even without this)
+    (async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          console.warn('[Saarthi] Location permission denied — GPS broadcast disabled');
+          return;
+        }
+        const initial = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        locationRef.current = initial.coords;
+
+        // Update WS with real position
+        if (wsRef.current) {
+          updateWSPosition(wsRef.current, initial.coords.latitude, initial.coords.longitude);
+        }
+
+        // Periodic location broadcast to Redis geo-index
+        geoRef.current = setInterval(async () => {
+          if (!active) return;
+          try {
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+            locationRef.current = loc.coords;
+            await pushLocation(vid, loc.coords.latitude, loc.coords.longitude, session.fatigueScore).catch(() => {});
+            if (wsRef.current) updateWSPosition(wsRef.current, loc.coords.latitude, loc.coords.longitude);
+          } catch (_) {}
+        }, GEO_INTERVAL_MS);
+      } catch (e) {
+        console.warn('[Saarthi] GPS setup failed:', e.message);
+      }
     })();
 
     return () => {
