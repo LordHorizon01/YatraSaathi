@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Animated, Easing, Pressable, StyleSheet, Text, View,
+  ActivityIndicator, Animated, Easing, Linking, Pressable, StyleSheet, Text, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Speech from 'expo-speech';
@@ -106,7 +106,10 @@ export default function CheckinScreen({ navigation }) {
         lng,
       });
       setResult(data);
-      dispatch({ type: Actions.CHECKIN_RESULT, payload: data });
+      dispatch({
+        type: Actions.CHECKIN_RESULT,
+        payload: { ...data, _anchorPos: lat && lng ? { lat, lng } : null },
+      });
       setPhase(PHASE.RESULT);
       Haptics.notificationAsync(
         data.fatigue_score <= 5
@@ -201,9 +204,31 @@ export default function CheckinScreen({ navigation }) {
 
             {result.suggested_poi && (
               <View style={styles.poiSuggestion}>
-                <Text style={styles.poiText}>
-                  ☕ {result.suggested_poi.name} — {result.suggested_poi.distance_m}m ahead
-                </Text>
+                <View style={styles.poiSuggestionRow}>
+                  <Text style={styles.poiText}>
+                    ☕ {result.suggested_poi.name}
+                  </Text>
+                  <Text style={styles.poiDistText}>
+                    {result.suggested_poi.distance_m >= 1000
+                      ? `${(result.suggested_poi.distance_m / 1000).toFixed(1)} km ahead`
+                      : `${result.suggested_poi.distance_m} m ahead`}
+                  </Text>
+                </View>
+                {result.suggested_poi.address ? (
+                  <Text style={styles.poiAddr} numberOfLines={1}>
+                    📍 {result.suggested_poi.address}
+                  </Text>
+                ) : null}
+                <Pressable
+                  style={styles.mapsBtn}
+                  onPress={() => {
+                    const url = result.suggested_poi.maps_url
+                      || `https://maps.google.com/maps?q=${result.suggested_poi.lat},${result.suggested_poi.lng}`;
+                    Linking.openURL(url).catch(() => {});
+                  }}
+                >
+                  <Text style={styles.mapsBtnText}>🗺️  Open in Google Maps</Text>
+                </Pressable>
               </View>
             )}
 
@@ -278,9 +303,21 @@ const styles = StyleSheet.create({
 
   poiSuggestion: {
     backgroundColor: COLORS.warningDim, borderRadius: RADIUS.lg,
-    padding: SPACING.md, borderWidth: 1, borderColor: COLORS.warning, width: '100%',
+    padding: SPACING.md, borderWidth: 1, borderColor: COLORS.warning,
+    width: '100%', gap: SPACING.sm,
   },
-  poiText: { fontSize: 13, color: COLORS.warning, fontWeight: '600', textAlign: 'center' },
+  poiSuggestionRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  poiText:     { fontSize: 14, color: COLORS.warning, fontWeight: '700', flex: 1 },
+  poiDistText: { fontSize: 13, color: COLORS.warning, fontWeight: '800' },
+  poiAddr:     { fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
+  mapsBtn: {
+    backgroundColor: COLORS.brand, borderRadius: RADIUS.md,
+    paddingVertical: 8, paddingHorizontal: 14,
+    alignItems: 'center', marginTop: 4,
+  },
+  mapsBtnText: { fontSize: 12, fontWeight: '700', color: COLORS.white },
 
   errorText: { color: COLORS.danger, fontSize: 13, marginTop: SPACING.md, textAlign: 'center' },
 });

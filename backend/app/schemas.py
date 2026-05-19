@@ -38,8 +38,10 @@ class VoiceAnalysisResponse(BaseModel):
     slur_flag:            str
     gpt_coherence_score:  Optional[float]
     danger_bubble_active: bool
-    suggested_poi:        Optional[dict]   # { name, distance_m } or None
-    transcript:           Optional[str]    # echoed back for debug; omit in prod
+    suggested_poi:        Optional[dict]      # closest POI { name, distance_m, … }
+    nearby_pois:          Optional[list[dict]] # all fetched POIs for the panel
+    transcript:           Optional[str]       # echoed back for debug; omit in prod
+
 
 
 # ─── Geo / DangerBubble ───────────────────────────────────────────────────────

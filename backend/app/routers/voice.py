@@ -1,5 +1,21 @@
+import sys
 import uuid
 from datetime import datetime
+
+
+def safe_print(*args, **kwargs):
+    """Print that survives Windows charmap encoding by replacing unencodable chars."""
+    enc = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+    safe_args = []
+    for a in args:
+        try:
+            s = str(a)
+            s.encode(enc)        # probe — will raise if charmap can't handle it
+            safe_args.append(s)
+        except (UnicodeEncodeError, LookupError):
+            safe_args.append(str(a).encode(enc, errors="replace").decode(enc))
+    print(*safe_args, **kwargs)
+
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, func
@@ -48,22 +64,25 @@ async def analyze_voice(
         # ── 2. Process audio ─────────────────────────────────────────────────
         audio_bytes  = await audio.read()
         transcript, first_word_sec = await transcribe_audio(audio_bytes, filename=audio.filename or "audio.m4a")
+        from app.services.places_client import fetch_nearby_pois
 
         # ── DIAGNOSTIC ───────────────────────────────────────────────────────
-        print(f"\n[SAARTHI DEBUG]")
-        print(f"  audio_size     : {len(audio_bytes)} bytes")
-        print(f"  transcript     : '{transcript}'")
-        print(f"  first_word_sec : {first_word_sec}")
-        print(f"  word_count     : {len(transcript.split())}")
-        print()
+        safe_print(f"\n[SAARTHI DEBUG]")
+        safe_print(f"  audio_size     : {len(audio_bytes)} bytes")
+        safe_print(f"  transcript     : '{transcript}'")
+        safe_print(f"  first_word_sec : {first_word_sec}")
+        safe_print(f"  word_count     : {len(transcript.split())}")
+        safe_print()
 
         # Silence detection — Whisper hallucinates on silent audio.
         # Require at least 3 real alphabetic words. Fewer = treated as no-response → 10/10.
         real_words = [w for w in transcript.split() if any(c.isalpha() for c in w)]
         is_silence = len(real_words) < 3
 
-        print(f"  real_words     : {real_words}")
-        print(f"  is_silence     : {is_silence}")
+        safe_print(f"  real_words     : {real_words}")
+        safe_print(f"  is_silence     : {is_silence}")
+
+        poi_list: list[dict] = []   # populated below only in warning zone
 
         if is_silence:
             # Driver did not respond — bypass all AI scoring, directly return 10/10
@@ -82,10 +101,25 @@ async def analyze_voice(
             true_latency_ms = int(first_word_sec * 1000)
             coherence       = await score_coherence(question_text, transcript)
             slur            = detect_slur(transcript)
-            fatigue         = build_fatigue_result(
+
+            # Pre-compute score to decide if we need POI fetch (5–7 = warning zone)
+            from app.services.fatigue_engine import compute_fatigue_score
+            pre_score, _, _, _ = compute_fatigue_score(true_latency_ms, coherence, slur)
+
+            # Fetch nearby POIs in warning+danger zone (5–9) AND driver has a GPS fix
+            poi_list: list[dict] = []
+            if 5 <= pre_score <= 9 and lat != 0.0 and lng != 0.0:
+                try:
+                    poi_list = await fetch_nearby_pois(lat, lng, radius_m=8000)
+                    safe_print(f"[POI] fetched {len(poi_list)} POIs near ({lat},{lng})")
+                except Exception as pe:
+                    safe_print(f"[POI] fetch skipped: {pe}")
+
+            fatigue = build_fatigue_result(
                 latency_ms      = true_latency_ms,
                 coherence_score = coherence,
                 slur_detected   = slur,
+                poi             = poi_list[0] if poi_list else None,
             )
 
         # ── 4. Compute drive_hour ─────────────────────────────────────────────
@@ -146,7 +180,7 @@ async def analyze_voice(
                 )
                 await upsert_driver_location(vehicle_id, broadcast_lat, broadcast_lng, fat_score)
             except Exception as e:
-                print(f"[DANGER WS] Broadcast failed: {e}")
+                safe_print(f"[DANGER WS] Broadcast failed: {e}")
 
         return VoiceAnalysisResponse(
             fatigue_score        = fatigue.fatigue_score,
@@ -156,11 +190,22 @@ async def analyze_voice(
             gpt_coherence_score  = round(coherence, 2),
             danger_bubble_active = fatigue.danger_bubble_active,
             suggested_poi        = fatigue.suggested_poi,
+            nearby_pois          = poi_list if (5 <= fat_score <= 9) else [],
             transcript           = transcript,
         )
 
     except Exception as e:
         await db.rollback()
         tb = traceback.format_exc()
-        print(f"[VOICE ERROR] {tb}")
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        safe_print(f"[VOICE ERROR] {tb}")
+        # Build a safe ASCII error detail — use repr() so that any Unicode
+        # characters inside the exception message are escaped (e.g. \u0935)
+        # rather than triggering a secondary charmap crash when FastAPI
+        # serialises the HTTPException detail string.
+        try:
+            err_detail = f"{type(e).__name__}: {str(e)}"
+            # Verify it is safe; if not, fall back to repr which escapes all non-ASCII
+            err_detail.encode("utf-8")
+        except Exception:
+            err_detail = repr(e)
+        raise HTTPException(status_code=500, detail=err_detail)

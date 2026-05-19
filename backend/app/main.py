@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routers import sessions, voice, geo, danger_ws
+from app.routers import sessions, voice, geo, danger_ws, pois
 
 
 @asynccontextmanager
@@ -30,6 +30,7 @@ app.include_router(sessions.router)
 app.include_router(voice.router)
 app.include_router(geo.router)
 app.include_router(danger_ws.router)
+app.include_router(pois.router)
 
 
 @app.get("/health")

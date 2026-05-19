@@ -41,6 +41,8 @@ const INITIAL_STATE = {
   dangerBubble:  false,
   hardLocked:    false,
   suggestedPoi:  null,
+  nearbyPois:    [],     // full list for live panel
+  anchorPos:     null,  // { lat, lng } where fatigue was detected
   lastCheckinAt: null,
   streakDay:     0,
   safetyPoints:  0,
@@ -96,7 +98,7 @@ function sessionReducer(state, { type, payload }) {
     }
 
     case Actions.CHECKIN_RESULT: {
-      const { fatigue_score, suggested_poi, danger_bubble_active } = payload;
+      const { fatigue_score, suggested_poi, nearby_pois, danger_bubble_active } = payload;
       const driveSeconds  = Math.floor((Date.now() - state.startedAt) / 1000);
       const intervalMs    = getCheckinIntervalMs(driveSeconds);
       const pointsEarned  = fatigue_score <= 5 ? 10 : 0;
@@ -106,6 +108,8 @@ function sessionReducer(state, { type, payload }) {
         fatigueState:  scoreToState(fatigue_score),
         dangerBubble:  danger_bubble_active ?? false,
         suggestedPoi:  suggested_poi ?? null,
+        nearbyPois:    (fatigue_score >= 5 && fatigue_score <= 9) ? (nearby_pois ?? []) : [],
+        anchorPos:     payload._anchorPos ?? state.anchorPos,
         checkinDue:    false,
         lastCheckinAt: new Date().toISOString(),
         safetyPoints:  state.safetyPoints + pointsEarned,
